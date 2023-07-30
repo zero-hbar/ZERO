@@ -1,0 +1,91 @@
+require("dotenv").config();
+const fetch = require("cross-fetch");
+const jQuery = require("jquery");
+
+const {
+    AccountId,
+    Client,
+    PrivateKey,
+    Hbar,
+    TransferTransaction,
+    TokenId,
+} = require("@hashgraph/sdk");
+const { truncate } = require("fs");
+
+const retry_milliseconds = 500
+
+let client = Client.forName({
+    "35.237.200.180:50211": "0.0.3"
+}).setOperator(
+    AccountId.fromString(process.env.OPERATOR_ID),
+    PrivateKey.fromString(process.env.OPERATOR_KEY),
+);
+
+//THIS PART GRABS JSONS FROM THE INTERNET AND DOESN'T PANIC IF THE INTERNET IS SLOW OR DOWN
+async function fetchJSON(url) {
+    for (var retry = 0; retry<10; retry++) {
+        try {
+            let res = await fetch(url)
+            if (res.status != 200) {console.log("Status !=200 in Fetch()", url); throw new Error("Status !=200")}
+            const raw = await res.json()
+            return raw    
+        }
+        catch (err) {
+            console.log(err)
+        }    
+        await new Promise(resolve => setTimeout(resolve, retry_milliseconds));   
+        console.log("Retrying to fetch JSON from Hedera mirror...")
+    }
+}
+
+async function jordansender(token) {// NAME OF THE SENDER FUNCTION. YOU ONLY NEED TO CHANGE THE TOKEN ID BELOW...or the name if you wish here AND below
+    var associated = await fetchJSON(`https://mainnet-public.mirrornode.hedera.com/api/v1/tokens/${token}/balances?limit=5000`);
+    var account_list = []
+    for (var balances of associated["balances"]) account_list.push(balances["account"])
+    var nulltest = JSON.stringify(associated["links"]);
+    console.log(nulltest)
+    while (nulltest != '{"next":null}') {
+        let next = "https://mainnet-public.mirrornode.hedera.com";
+        next = next.concat(JSON.stringify(associated["links"]));
+        next = next.replace('{"next":"', '')
+        next = next.replace('"}', '')
+        associated = await fetchJSON(`${next}`);
+        for (var balances of associated["balances"]) account_list.push(balances["account"])
+        nulltest = JSON.stringify(associated["links"]);
+    }
+    let total_associated = account_list.length;
+    console.log(account_list)
+    let distribution = account_list.length
+    let tokenbalance = await fetchJSON(`https://mainnet-public.mirrornode.hedera.com/api/v1/tokens/${token}/balances?account.id=${client.operatorAccountId}`);
+    let currentbalance = tokenbalance.balances[0].balance;
+    currentbalance = Math.floor(currentbalance / 100000000);
+    console.log ("There are",distribution,"accounts that will be sent JORDAN!","\n") //CHANGE TOKEN NAME
+    
+    while (distribution > 0) {
+        if (account_list.length == 0) {
+            console.log("Script Complete!"); 
+            process.exit(1);
+        }   
+        var account = account_list[0]
+
+    //THIS IS HOW MANY TOKENS WILL BE SENT TO EACH WALLET
+        var amount = 100.00000001; //number of tokens to send to each account
+        var disttotal = amount*total_associated; //total # of ASSOCIATED accounts
+        var memo = `Sending ${amount} TOKEN NAME to ${total_associated} accounts, ${disttotal} in total, ${currentbalance} remains`; //CHANGE TOKEN NAME
+        //BELOW IS A COPY OF THE MEMO. YOU CAN CHANGE AND ALTER WHAT YOU WANT SENT. WITHOUT LOSSING THE ORIGINAL
+        //var memo = `Sending ${amount} ZERO to ${total_associated} accounts, ${disttotal} in total, ${currentbalance} remains`;
+    
+        if (account != client.operatorAccountId ) {
+            const sendHbar = await new TransferTransaction()
+                .addTokenTransfer(token, client.operatorAccountId, (Math.trunc(-amount*100000000))) //Sending account
+                .addTokenTransfer(token, account, (Math.trunc(amount*100000000))) //Receiving account
+                .setTransactionMemo(`${memo}`)
+                .execute(client);
+            distribution = distribution - 1
+        }
+        console.log (distribution, "accounts left","\n");
+        account_list.shift();
+    }
+}
+
+jordansender("0.0.token.id") //token id to send
